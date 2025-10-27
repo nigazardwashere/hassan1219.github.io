@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>فحص باركود - ثابت (مصحح)</title>
+  <style>
+    body{font-family:Arial, sans-serif;background:#071029;color:#e6f0ff;padding:14px}
+    .card{max-width:820px;margin:0 auto;background:#0e1a2b;padding:14px;border-radius:10px}
+    h1{margin:0 0 12px;text-align:center}
+    .controls{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:12px}
+    button{padding:10px 14px;border-radius:8px;border:0;cursor:pointer;background:#4c8cff;color:#fff;font-weight:700}
+    #preview{width:240px;height:160px;object-fit:cover;background:#000;border-radius:8px;border:1px solid rgba(255,255,255,0.04)}
+    .info{margin-top:10px}
+    .badge{display:inline-block;padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.03)}
+    canvas{display:none}
+    video{max-width:100%;border-radius:8px;display:none}
+    .small{font-size:13px;color:#bcd}
+    .logo-top-right {
+    position: fixed;   /* يجعل الصورة ثابتة عند التمرير */
+    top: 10px;         /* المسافة من الأعلى */
+    right: 10px;       /* المسافة من اليمين */
+    width: 150px;       /* عرض الصورة */
+    height: auto;      /* الارتفاع تلقائي */
+    z-index: 1000;     /* فوق كل شيء */
+    }
+    .logo-top-left {
+    position: fixed;
+    top: 10px;      /* المسافة من الأسفل */
+    left: 10px;        /* المسافة من اليسار */
+    width: 150px;
+    height: auto;
+    z-index: 1000;
+
+  }
+</style>
+</head>
+<body>
+<img src="C:\Users\Zeyad IT\Downloads\photo_٢٠٢٥-١٠-٢٦_٠٠-٢٠-٥٣.jpg" alt="شعار آخر" class="logo-top-left">
+
+  <img src="C:\Users\Zeyad IT\Downloads\photo_٢٠٢٥-١٠-١٨_٢٠-٣٠-٤٤.jpg" alt="شعار الموقع" class="logo-top-right">
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>فحص باركود — فتح كاميرا / رفع صورة</h1>
+
+    <div class="controls">
+      <button id="openCamFileBtn">التقاط صورة (فتح كاميرا النظام)</button>
+      <button id="openFileBtn">رفع صورة من المعرض</button>
+      <button id="openLiveCamBtn">فتح كاميرا مباشرة (يطلب إذن)</button>
+    </div>
+
+    <input id="cameraInput" type="file" accept="image/*" capture="environment" style="display:none" />
+    <input id="fileInput" type="file" accept="image/*" style="display:none" />
+
+    <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;justify-content:center">
+      <img id="preview" alt="معاينة" src="" />
+      <div style="min-width:260px">
+        <div>الناتج: <div id="decoded" class="badge">لم يتم الفحص</div></div>
+        <div style="margin-top:8px">النوع (تقديري): <div id="type" class="badge">—</div></div>
+        <div style="margin-top:8px">الحكم الأمني: <div id="verdict" class="badge">—</div></div>
+        <div style="margin-top:8px" class="small">الصيغة المكتشفة: <span id="format">—</span></div>
+      </div>
+    </div>
+
+    <div class="info" id="log"></div>
+
+    <canvas id="snap" width="800" height="600"></canvas>
+    <video id="liveVideo" autoplay playsinline></video>
+  </div>
+
+<script type="module">
+const cameraInput = document.getElementById('cameraInput');
+const fileInput = document.getElementById('fileInput');
+const openCamFileBtn = document.getElementById('openCamFileBtn');
+const openFileBtn = document.getElementById('openFileBtn');
+const openLiveCamBtn = document.getElementById('openLiveCamBtn');
+const preview = document.getElementById('preview');
+const decodedEl = document.getElementById('decoded');
+const typeEl = document.getElementById('type');
+const verdictEl = document.getElementById('verdict');
+const formatEl = document.getElementById('format');
+const logEl = document.getElementById('log');
+const canvas = document.getElementById('snap');
+const ctx = canvas.getContext('2d');
+const liveVideo = document.getElementById('liveVideo');
+
+let barcodeDetector = null;
+let zxingReader = null;
+let usingZXing = false;
+
+// جاهزية BarcodeDetector إن وُجد (مع try-catch)
+if ('BarcodeDetector' in window) {
+  try {
+    // بعض المتصفحات تقبل بدون معطى
+    barcodeDetector = new BarcodeDetector();
+    log('BarcodeDetector متاح');
+  } catch (e) {
+    // محاولة أن تهيئ بصيغ شائعة (إن دعمت)
+    try {
+      barcodeDetector = new BarcodeDetector({ formats: ['qr_code', 'ean_13', 'ean_8', 'code_128', 'upc_a', 'upc_e'] });
+      log('BarcodeDetector متاح مع صيغ محددة');
+    } catch (e2) {
+      barcodeDetector = null;
+      log('تعذر تهيئة BarcodeDetector: ' + e2.message);
+    }
+  }
+}
+
+// lazy-load ZXing عند الحاجة
+async function ensureZXing(){
+  if (zxingReader) return;
+  try {
+    const ZX = await import('https://unpkg.com/@zxing/library@0.19.1/esm/index.min.js');
+    // BrowserBarcodeReader هو اللازم للمتصفح
+    zxingReader = new ZX.BrowserBarcodeReader();
+    usingZXing = true;
+    log('تم تحميل ZXing (نسخة احتياطية)');
+  } catch(e){
+    usingZXing = false;
+    log('فشل تحميل ZXing: ' + (e && e.message ? e.message : e));
+  }
+}
+
+function log(msg){ logEl.innerText = msg; }
+
+// ربط الأزرار بفتح input
+openCamFileBtn.addEventListener('click', ()=> cameraInput.click());
+openFileBtn.addEventListener('click', ()=> fileInput.click());
+
+// مساعدة لتقليل أحجام الصور الضخمة قبل الرسم على الكانفاس
+function fitImageToCanvas(img, maxWidth = 800, maxHeight = 800) {
+  let w = img.naturalWidth || img.width;
+  let h = img.naturalHeight || img.height;
+  const ratio = Math.min(maxWidth / w, maxHeight / h, 1);
+  return { width: Math.round(w * ratio), height: Math.round(h * ratio) };
+}
+
+async function handleFile(file){
+  if (!file) return;
+  resetResult();
+  preview.src = '';
+  try {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = async ()=>{
+      URL.revokeObjectURL(url);
+      const { width, height } = fitImageToCanvas(img);
+      canvas.width = width;
+      canvas.height = height;
+ctx.save();
+ctx.clearRect(0, 0, canvas.width, canvas.height);
+ctx.translate(canvas.width / 2, canvas.height / 2);
+ctx.drawImage(img, -width / 2, -height / 2, width, height);
+ctx.restore();
+
+      // تحويل إلى صورة صغيرة للمعاينة
+      preview.src = canvas.toDataURL('image/jpeg',0.9);
+
+      // فحص
+      const res = await scanCanvasForBarcode();
+      if (!res) {
+        decodedEl.textContent = 'لم يعثر على باركود';
+        typeEl.textContent = '—';
+        verdictEl.textContent = '—';
+        formatEl.textContent = '—';
+        log('لم يتم فك الباركود');
+        return;
+      }
+      showResult(res);
+    };
+    img.onerror = ()=>{ alert('فشل تحميل الصورة'); URL.revokeObjectURL(url); };
+    img.src = url;
+  } catch(e){
+    alert('خطأ عند معالجة الملف: ' + (e && e.message ? e.message : e));
+  }
+}
+
+cameraInput.addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  if (f) handleFile(f);
+  cameraInput.value = '';
+});
+fileInput.addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  if (f) handleFile(f);
+  fileInput.value = '';
+});
+
+// getUserMedia option (سيطلب إذن)
+openLiveCamBtn.addEventListener('click', async ()=>{
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('المتصفح لا يدعم getUserMedia');
+    return;
+  }
+  resetResult();
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ video:{ facingMode: 'environment' }, audio:false });
+    liveVideo.srcObject = s;
+    liveVideo.style.display = 'block';
+
+    // الانتظار حتى تكون الفيديو جاهزاً
+    await new Promise(resolve => {
+      if (liveVideo.readyState >= 2) resolve();
+      else liveVideo.onloadeddata = () => resolve();
+      setTimeout(resolve, 1200); // حد أقصى للانتظار
+    });
+
+    // التقط صورة لمرة واحدة ثم أوقف الستريم
+    const w = liveVideo.videoWidth || 640;
+    const h = liveVideo.videoHeight || 480;
+    // قد نريد تصغير للصورة الكبيرة
+    const max = 1600;
+    const ratio = Math.min(max / w, max / h, 1);
+    canvas.width = Math.round(w * ratio);
+    canvas.height = Math.round(h * ratio);
+    ctx.drawImage(liveVideo,0,0,canvas.width,canvas.height);
+    preview.src = canvas.toDataURL('image/jpeg',0.9);
+
+    // وقف الستريم
+    s.getTracks().forEach(t=>t.stop());
+    liveVideo.style.display = 'none';
+
+    const res = await scanCanvasForBarcode();
+    if (!res) {
+      decodedEl.textContent='لم يعثر';
+      typeEl.textContent='—';
+      verdictEl.textContent='—';
+      formatEl.textContent='—';
+      log('لم يتم فك الباركود من الكاميرا الحية');
+    } else showResult(res);
+
+  } catch(e){
+    alert('لم يُسمح بالوصول للكاميرا أو حدث خطأ: ' + (e && e.message ? e.message : e));
+  }
+});
+
+// البحث عن باركود في الكانفاس
+async function scanCanvasForBarcode(){
+  // نحاول BarcodeDetector أولاً إن كان موجوداً
+  if (barcodeDetector) {
+    try {
+      // createImageBitmap يمكن أن يتقبل canvas مباشرة
+      const bitmap = await createImageBitmap(canvas);
+      const r = await barcodeDetector.detect(bitmap);
+      if (r && r.length) {
+        // نأخذ أول نتيجة صالحة
+        return { text: (r[0].rawValue || ''), format: (r[0].format || 'unknown') };
+      }
+    } catch(e){ console.warn('BarcodeDetector error:', e); }
+  }
+  // ZXing كنسخة احتياطية
+  await ensureZXing();
+  if (usingZXing && zxingReader) {
+    try {
+      // BrowserBarcodeReader لديه decodeFromCanvas (يعيد Promise)
+      const result = await zxingReader.decodeFromCanvas(canvas);
+      if (result) {
+        // النتائج من ZXing لها أساليب مختلفة
+        // result.getText() و result.getBarcodeFormat()
+        const text = typeof result.getText === 'function' ? result.getText() : (result.text || '');
+        const format = typeof result.getBarcodeFormat === 'function' ? result.getBarcodeFormat() : (result.format || 'unknown');
+        return { text, format };
+      }
+    } catch(e){ console.warn('ZXing decode error:', e); }
+  }
+
+  return null;
+}
+
+function showResult(res){
+  decodedEl.textContent = res.text || '';
+  const classify = classifyValue(res.text || '');
+  typeEl.textContent = classify.kind;
+  formatEl.textContent = res.format || '—';
+  const verdict = securityAssessment(res.text || '', classify);
+  verdictEl.textContent = verdict.label;
+  log((verdict.reasons && verdict.reasons.length ? 'نتيجة: ' + verdict.reasons.join('; ') : 'تم الفحص'));
+}
+
+function resetResult(){
+  decodedEl.textContent = 'قيد المعالجة...';
+  typeEl.textContent = '—';
+  verdictEl.textContent = '—';
+  formatEl.textContent = '—';
+  logEl.innerText = '';
+}
+
+// خوارزميات مبسطة للتصنيف
+function classifyValue(text){
+  if(!text) return { kind:'فارغ' };
+  const t = text.trim();
+
+  // URL with scheme
+  if (/^(https?:\/\/)/i.test(t)) return { kind:'رابط/موقع' };
+  // URL without scheme (domain-like)
+  if (/^[\w-]+(\.[\w.-]+)+([\/?#].*)?$/.test(t)) return { kind:'رابط/موقع' };
+  // phone
+  if (/^\+?\d[\d\s\-\(\)]{5,}$/i.test(t)) return { kind:'رقم هاتف' };
+  // digits only possible product codes (EAN, UPC, ISBN variants)
+  const digitsOnly = t.replace(/\D/g,'');
+  if ([8,12,13,10,11,14].includes(digitsOnly.length)) return { kind:'بضاعة/رمز منتج' };
+  return { kind:'نص/آخر' };
+}
+
+// تقييم أمني بسيط مبني على قواعد محلية (بدون استعلام خارجي)
+function securityAssessment(text, classify){
+  const reasons = [];
+  const t = (text || '').trim();
+
+  if (!t) {
+    reasons.push('لا يوجد محتوى للفحص');
+    return { label: 'غير معروف', reasons };
+  }
+
+  if (classify.kind === 'رابط/موقع') {
+    // حكم بسيط على البروتوكول
+    if (/^https:\/\//i.test(t)) {
+      reasons.push('رابط يبدأ بـ HTTPS — آمن نسبياً من ناحية النقل');
+    } else if (/^http:\/\//i.test(t)) {
+      reasons.push('رابط غير مشفر (HTTP) — يفضل الحذر');
+    } else {
+      reasons.push('رابط بدون تعريف البروتوكول');
+    }
+
+    // تحقق من مؤشرات اختصار أو روابط مشبوهة (قائمة بسيطة)
+    const suspiciousShorteners = ['bit.ly','t.co','goo.gl','tinyurl.com','ow.ly'];
+    try {
+      const urlObj = new URL(t.startsWith('http') ? t : 'https://' + t);
+      const host = urlObj.hostname.toLowerCase();
+      if (suspiciousShorteners.some(s => host.includes(s))) {
+        reasons.push('رابط مختصر — قد يخفي الوجهة الحقيقية');
+      }
+      // عنوان IP بدل اسم نطاق
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+        reasons.push('المضيف هو عنوان IP مباشر — تحقق يدوياً');
+      }
+      // punycode (قد يدل على homograph attacks)
+      if (host.includes('xn--')) {
+        reasons.push('اسم نطاق يحتوي punycode — قد يكون محاولة خداع');
+      }
+    } catch(e){
+      reasons.push('تعذر تحليل الرابط بالكامل');
+    }
+
+    // تصنيف نهائي
+    const dangerSigns = reasons.filter(r => /غير مشفر|مختصر|IP|punycode|تحقق/i.test(r));
+    if (dangerSigns.length) return { label: 'مشتبه/تحذير', reasons };
+    return { label: 'آمن نسبياً', reasons };
+  }
+
+  if (classify.kind === 'رقم هاتف') {
+    // قاعدة بسيطة: أرقام قصيرة جداً قد تكون خاطئة
+    const digits = t.replace(/\D/g,'');
+    if (digits.length < 7) reasons.push('رقم قصير غير نمطي');
+    else reasons.push('رقم هاتف — لا يمكن التحقق من السلامة محلياً');
+    return { label: 'محتمَل آمن', reasons };
+  }
+
+  if (classify.kind === 'بضاعة/رمز منتج') {
+    reasons.push('رمز منتج — غير ضار عادة (لا يتضمن رابطاً مباشراً)');
+    return { label: 'محتمل آمن', reasons };
+  }
+
+  // نص عادي أو آخر
+  const lower = t.toLowerCase();
+  if (lower.includes('http') || lower.includes('www.') || /@/.test(lower)) {
+    reasons.push('يحتوي النص على مؤشر لرابط/بريد — قد يتطلب فحص إضافي');
+    return { label: 'مشتبه', reasons };
+  }
+
+  reasons.push('نص عادي — لا يبدوا ضاراً');
+  return { label: 'محتمل آمن', reasons };
+}
+</script>
+</body>
+</html>
